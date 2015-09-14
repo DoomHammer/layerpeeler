@@ -177,11 +177,25 @@ class DockerTree:
 def main():
     sample = DockerTree().get_tree()
     ExampleTreeBrowser(sample).main()
-    print("You've chosen for deletion the following images:")
-    for image in get_tagged_images():
-        im = image.get_node(image.root).data[u'image']
-        print("%s (%s)" % (im[u'RepoTags'], im[u'Id']))
-    print("Proceed? [y/N]")
+    images = get_tagged_images()
+    if len(images) > 0:
+        print("You've chosen for deletion the following images:")
+        for image in images:
+            im = image.get_node(image.root).data[u'image']
+            print("%s (%s)" % (im[u'RepoTags'], im[u'Id']))
+        s = ' '
+        while s.lower() not in ['y', 'n', '']:
+            s = raw_input("Proceed? [y/N] ")
+        if s.lower() == 'y':
+            for image in reversed(images):
+                im = image.get_node(image.root).data[u'image']
+                print("Removing image %s (%s)" % (im[u'RepoTags'], im[u'Id']))
+                try:
+                    Client(base_url='unix://var/run/docker.sock').remove_image(image=im[u'Id'])
+                except:
+                    print('FAILED')
+                else:
+                    print('OK')
 
 
 #######
