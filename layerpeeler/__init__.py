@@ -177,6 +177,11 @@ class DockerTree:
 def main():
     sample = DockerTree().get_tree()
     ExampleTreeBrowser(sample).main()
+    print("You've chosen for deletion the following images:")
+    for image in get_tagged_images():
+        im = image.get_node(image.root).data[u'image']
+        print("%s (%s)" % (im[u'RepoTags'], im[u'Id']))
+    print("Proceed? [y/N]")
 
 
 #######
@@ -200,8 +205,3 @@ def get_tagged_images():
 
 if __name__=="__main__":
     main()
-    print("You've chosen for deletion the following images:")
-    for image in get_tagged_images():
-        im = image.get_node(image.root).data[u'image']
-        print("%s (%s)" % (im[u'RepoTags'], im[u'Id']))
-    print("Proceed? [y/N]")
