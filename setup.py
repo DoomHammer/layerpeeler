@@ -15,7 +15,7 @@ reqs = [str(ir.req) for ir in install_reqs]
 
 setup(
     name="layerpeeler",
-    version="0.0.1",
+    version="0.0.2",
     author="Piotr Gaczkowski",
     author_email="doomhammerng@gmail.com",
     description=("A simple tool to study available Docker layers."),

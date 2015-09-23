@@ -6,9 +6,12 @@ import urwid
 
 
 class ExampleTreeWidget(urwid.TreeWidget):
+
+    __metaclass__ = urwid.MetaSignals
+    signals = ['remove_image']
+
     def __init__(self, node):
         self.__super.__init__(node)
-        add_widget(node.get_value().get_node(node.get_value().root).identifier, self)
         # insert an extra AttrWrap for our own use
         self._w = urwid.AttrWrap(self._w, None)
         self.tagged = False
@@ -30,6 +33,10 @@ class ExampleTreeWidget(urwid.TreeWidget):
         Default behavior: Toggle flagged on space, ignore other keys.
         """
         if key == "d":
+            tree = self.get_node().get_value()
+            tag = tree.get_node(tree.root).tag
+            data = tree.get_node(tree.root).data
+            urwid.emit_signal(self, 'remove_image', {u'Tag': tag, u'Data': data})
             self.tagged = not self.tagged
             self.update_w()
         else:
@@ -45,8 +52,8 @@ class ExampleTreeWidget(urwid.TreeWidget):
             self._w.attr = 'body'
             self._w.focus_attr = 'focus'
 
-    """ Display widget for leaf nodes """
     def get_display_text(self):
+        """ Display widget for leaf nodes """
         tree = self.get_node().get_value()
         tag = tree.get_node(tree.root).tag
         data = tree.get_node(tree.root).data
@@ -58,14 +65,28 @@ class ExampleTreeWidget(urwid.TreeWidget):
 
 class ExampleNode(urwid.TreeNode):
     """ Data storage object for leaf nodes """
+
+    def __init__(self, data, browser, *args, **kwargs):
+        urwid.TreeNode.__init__(self, data, *args, **kwargs)
+        self.browser = browser
+
     def load_widget(self):
-        return ExampleTreeWidget(self)
+        widget = ExampleTreeWidget(self)
+        urwid.connect_signal(widget, 'remove_image', self.browser.remove_dialog)
+        return widget
 
 
 class ExampleParentNode(urwid.ParentNode):
     """ Data storage object for interior/parent nodes """
+
+    def __init__(self, data, browser, *args, **kwargs):
+        urwid.ParentNode.__init__(self, data, *args, **kwargs)
+        self.browser = browser
+
     def load_widget(self):
-        return ExampleTreeWidget(self)
+        widget = ExampleTreeWidget(self)
+        urwid.connect_signal(widget, 'remove_image', self.browser.remove_dialog)
+        return widget
 
     def load_child_keys(self):
         data = self.get_value()
@@ -79,16 +100,17 @@ class ExampleParentNode(urwid.ParentNode):
             childclass = ExampleParentNode
         else:
             childclass = ExampleNode
-        return childclass(childdata, parent=self, key=key, depth=childdepth)
+        return childclass(childdata, self.browser, parent=self, key=key, depth=childdepth)
 
 
-class ExampleTreeBrowser:
+class ExampleTreeBrowser(object):
+
     palette = [
         ('body', 'light gray', 'black'),
         ('focus', 'light gray', 'dark blue', 'standout'),
         ('head', 'yellow', 'black', 'standout'),
         ('foot', 'black', 'dark blue'),
-        ('key', 'light cyan', 'dark blue','underline'),
+        ('key', 'light cyan', 'dark blue', 'underline'),
         ('title', 'white', 'dark blue', 'bold'),
         ('flag', 'light red', 'black'),
         ('tagged', '', 'dark gray'),
@@ -111,35 +133,103 @@ class ExampleTreeBrowser:
         ('key', "Q"),
         ]
 
-    def __init__(self, data=None):
-        self.topnode = ExampleParentNode(data)
-        self.listbox = urwid.TreeListBox(urwid.TreeWalker(self.topnode))
-        self.listbox.offset_rows = 0
-        self.header = urwid.Text( "Docker Images" )
-        self.footer = urwid.AttrWrap( urwid.Text( self.footer_text ),
-            'foot')
-        self.view = urwid.Frame(
-            urwid.AttrWrap( self.listbox, 'body' ),
-            header=urwid.AttrWrap(self.header, 'head' ),
-            footer=self.footer )
+    def __init__(self, docker_if):
+        self.docker_if = docker_if
+        self.header = urwid.Text("Docker Images")
+        self.footer = urwid.AttrWrap(urwid.Text(self.footer_text),
+                                     'foot')
+        self.frame = urwid.Frame(
+            None,
+            header=urwid.AttrWrap(self.header, 'head'),
+            footer=self.footer)
+        self.loop = None
+        self.update_content(True)
 
     def main(self):
         """Run the program."""
 
         self.loop = urwid.MainLoop(self.view, self.palette,
-            unhandled_input=self.unhandled_input)
+                                   unhandled_input=self.unhandled_input)
         self.loop.run()
 
     def unhandled_input(self, k):
-        if k in ('q','Q'):
+        if k in ('q', 'Q'):
             raise urwid.ExitMainLoop()
 
+    def update_content(self, reload_data=False):
+        if reload_data:
+            data = self.docker_if.get_image_tree()
+            self.topnode = ExampleParentNode(data, self)
+            self.walker = urwid.TreeWalker(self.topnode)
+            self.listbox = urwid.TreeListBox(self.walker)
+            self.listbox.offset_rows = 0
+        self.frame.body = urwid.AttrWrap(self.listbox, 'body')
+        self.view = self.frame
+        if self.loop:
+            self.loop.widget = self.view
 
-class DockerTree:
-    def __init__(self):
-        self.client = Client(base_url='unix://var/run/docker.sock')
-        self.tree = Tree()
-        self.tree.create_node('', '/')
+    def update_cb(self, *args, **kwargs):
+        if len(args) > 1 and args[1]:
+            self.update_content(True)
+        else:
+            self.update_content(False)
+
+    def remove_dialog(self, user_args, *args, **kwargs):
+        text = urwid.Text("Are you sure you want to remove image %s?" % user_args[u'Tag'])
+        yes = urwid.Button("Yes")
+        no = urwid.Button("No", self.update_cb)
+        urwid.connect_signal(no, 'click', self.update_cb)
+        urwid.connect_signal(yes, 'click', self.remove_image, user_args=[user_args])
+        question = urwid.ListBox(urwid.SimpleFocusListWalker((text, urwid.Divider(), no, yes)))
+        overlay = urwid.Overlay(question, self.view, 'center', ('relative', 30), 'middle',
+                                ('relative', 30))
+        self.loop.widget = overlay
+
+    def remove_image(self, *args, **kwargs):
+        text = urwid.Text("Removing image %s..." % args[0][u'Tag'])
+        div = urwid.Divider()
+        placeholder = urwid.Text("")
+        ok = urwid.Button("OK", self.update_cb, True)
+        listwalker = urwid.SimpleFocusListWalker([text, div, placeholder])
+        listbox = urwid.ListBox(listwalker)
+        overlay = urwid.Overlay(listbox, self.view, 'center', ('relative', 30), 'middle',
+                                ('relative', 30))
+        self.loop.widget = overlay
+        try:
+            self.docker_if.remove_image(image=args[0][u'Data'][u'image'][u'Id'])
+        except Exception, e:
+            text.set_text(text.get_text()[0] + " FAILED (%s)" % str(e))
+        else:
+            text.set_text(text.get_text()[0] + " OK")
+        listwalker[-1] = ok
+
+
+class DockerIf(object):
+    def __init__(self, base_url='unix://var/run/docker.sock'):
+        self.client = Client(base_url=base_url)
+
+    def remove_image(self, *args, **kwargs):
+        self.client.remove_image(*args, **kwargs)
+
+    def add_image_node(self, image, image_id, parent=''):
+        is_dangling = image_id in self.dangling
+
+        node = "%s (%s)" % (image[u'RepoTags'], image[u'Id'])
+
+        if parent == '':
+            self.image_tree.create_node(node, image_id, parent='/',
+                                        data={u'image': image, u'Dangling': is_dangling})
+        else:
+            self.image_tree.create_node(node, image_id, parent=parent,
+                                        data={u'image': image, u'Dangling': is_dangling})
+
+        if image[u'Id'] in self.pending:
+            for node in self.pending[image[u'Id']]:
+                self.add_image_node(node[0], node[1], parent=image[u'Id'])
+
+    def prepare_image_tree(self):
+        self.image_tree = Tree()
+        self.image_tree.create_node('', '/')
         self.pending = dict()
         dangling_images = self.client.images(filters={u'dangling': True})
         self.dangling = []
@@ -147,75 +237,23 @@ class DockerTree:
             self.dangling.append(image[u'Id'])
         for image in self.client.images(all=True):
             if u'ParentId' in image and image[u'ParentId'] != '':
-                if self.tree.contains(image[u'ParentId']) or image[u'ParentId'] == '':
-                    self.add_node(image, image[u'Id'], parent=image[u'ParentId'])
+                if self.image_tree.contains(image[u'ParentId']) or image[u'ParentId'] == '':
+                    self.add_image_node(image, image[u'Id'], parent=image[u'ParentId'])
                 else:
                     if image[u'ParentId'] not in self.pending:
                         self.pending[image[u'ParentId']] = []
                     self.pending[image[u'ParentId']].append((image, image[u'Id']))
             else:
-                self.add_node(image, image[u'Id'])
+                self.add_image_node(image, image[u'Id'])
 
-    def add_node(self, image, image_id, parent=''):
-        is_dangling = image_id in self.dangling
-
-        node="%s (%s)" % (image[u'RepoTags'], image[u'Id'])
-
-        if parent == '':
-            self.tree.create_node(node, image_id, parent='/', data={u'image': image, u'Dangling': is_dangling})
-        else:
-            self.tree.create_node(node, image_id, parent=parent, data={u'image': image, u'Dangling': is_dangling})
-
-        if image[u'Id'] in self.pending:
-            for node in self.pending[image[u'Id']]:
-                self.add_node(node[0], node[1], parent=image[u'Id'])
-
-    def get_tree(self):
-        return self.tree
+    def get_image_tree(self):
+        self.prepare_image_tree()
+        return self.image_tree
 
 
 def main():
-    sample = DockerTree().get_tree()
-    ExampleTreeBrowser(sample).main()
-    images = get_tagged_images()
-    if len(images) > 0:
-        print("You've chosen for deletion the following images:")
-        for image in images:
-            im = image.get_node(image.root).data[u'image']
-            print("%s (%s)" % (im[u'RepoTags'], im[u'Id']))
-        s = ' '
-        while s.lower() not in ['y', 'n', '']:
-            s = raw_input("Proceed? [y/N] ")
-        if s.lower() == 'y':
-            for image in reversed(images):
-                im = image.get_node(image.root).data[u'image']
-                print("Removing image %s (%s)" % (im[u'RepoTags'], im[u'Id']))
-                try:
-                    Client(base_url='unix://var/run/docker.sock').remove_image(image=im[u'Id'])
-                except:
-                    print('FAILED')
-                else:
-                    print('OK')
+    ExampleTreeBrowser(DockerIf()).main()
 
 
-#######
-# global cache of widgets
-_widget_cache = {}
-
-def add_widget(image, widget):
-    """Add the widget for a given path"""
-
-    _widget_cache[image] = widget
-
-def get_tagged_images():
-    """Return a list of all filenames marked as flagged."""
-
-    l = []
-    for w in _widget_cache.values():
-        if w.tagged:
-            l.append(w.get_node().get_value())
-    return l
-
-
-if __name__=="__main__":
+if __name__ == "__main__":
     main()
